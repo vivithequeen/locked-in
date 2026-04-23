@@ -63,22 +63,36 @@ def handle_lockin(ack, body, client):
                 },
                 {
                     "type": "input",
-                    "block_id": "end_date_block",
-                    "label": {"type": "plain_text", "text": "Lock-in end date"},
+                    "block_id": "hours_block",
+                    "label": {
+                        "type": "plain_text",
+                        "text": "How many hours can you stay? (1–24)",
+                    },
                     "element": {
-                        "type": "datepicker",
-                        "action_id": "end_date",
-                        "placeholder": {"type": "plain_text", "text": "Select a date"},
+                        "type": "number_input",
+                        "action_id": "hours",
+                        "is_decimal_allowed": False,
+                        "min_value": "1",
+                        "max_value": "24",
+                        "placeholder": {
+                            "type": "plain_text",
+                            "text": "Enter a number between 1 and 24",
+                        },
                     },
                 },
                 {
                     "type": "input",
-                    "block_id": "end_time_block",
-                    "label": {"type": "plain_text", "text": "End time"},
+                    "block_id": "notes_block",
+                    "optional": True,
+                    "label": {"type": "plain_text", "text": "Additional notes"},
                     "element": {
-                        "type": "timepicker",
-                        "action_id": "end_time",
-                        "placeholder": {"type": "plain_text", "text": "Select a time"},
+                        "type": "plain_text_input",
+                        "action_id": "notes",
+                        "multiline": True,
+                        "placeholder": {
+                            "type": "plain_text",
+                            "text": "Anything else you'd like to add...",
+                        },
                     },
                 },
             ],
@@ -125,43 +139,41 @@ def handle_lockin_submission(ack, body, view, client):
     timezone = values["timezone_block"]["timezone"]["selected_option"]["value"]
     start_date = values["start_date_block"]["start_date"]["selected_date"]
     start_time = values["start_time_block"]["start_time"]["selected_time"]
-    end_date = values["end_date_block"]["end_date"]["selected_date"]
-    end_time = values["end_time_block"]["end_time"]["selected_time"]
-
-    if (end_date, end_time) <= (start_date, start_time):
-        ack(
-            response_action="errors",
-            errors={
-                "end_date_block": "End must be after start",
-                "end_time_block": "End must be after start",
-            },
-        )
-        return
+    hours = values["hours_block"]["hours"]["value"]
+    notes = (values.get("notes_block", {}).get("notes", {}).get("value") or "")
 
     try:
-        airtable.create({
-            "Slack ID": user_id,
-            "Timezone": timezone,
-            "Start Date": start_date,
-            "Start Time": start_time,
-            "End Date": end_date,
-            "End Time": end_time,
-        })
+        airtable.create(
+            {
+                "Slack ID": user_id,
+                "Timezone": timezone,
+                "Start Date": start_date,
+                "Start Time": start_time,
+                "Hours": int(hours),
+                "Notes": notes,
+            }
+        )
     except Exception as e:
         print(f"Airtable error: {e}")
-        ack(response_action="errors", errors={"start_date_block": "Failed to save, please try again."})
+        ack(
+            response_action="errors",
+            errors={"start_date_block": "Failed to save, please try again."},
+        )
         return
 
     ack()
     print(
-        f"New lock-in: user={user_id}, tz={timezone}, start={start_date} {start_time}, end={end_date} {end_time}"
+        f"New lock-in: user={user_id}, tz={timezone}, start={start_date} {start_time}, hours={hours}"
     )
+
+    notes_line = f"\n*Notes:* {notes}" if notes else ""
 
     client.chat_postMessage(
         channel=user_id,
         text=(
             f"Thanks for signing up!\n"
-            f"*Start:* {start_date} {start_time}  |  *End:* {end_date} {end_time}  |  *Timezone:* {timezone}"
+            f"*Start:* {start_date} {start_time}  |  *Duration:* {hours} hours  |  *Timezone:* {timezone}"
+            f"{notes_line}"
         ),
     )
 
@@ -169,7 +181,8 @@ def handle_lockin_submission(ack, body, view, client):
         channel=os.environ["ADMIN_SLACK_ID"],
         text=(
             f"New lock-in from <@{user_id}>!\n"
-            f"*Start:* {start_date} {start_time}  |  *End:* {end_date} {end_time}  |  *Timezone:* {timezone}"
+            f"*Start:* {start_date} {start_time}  |  *Duration:* {hours} hours  |  *Timezone:* {timezone}"
+            f"{notes_line}"
         ),
     )
 
