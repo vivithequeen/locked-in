@@ -1,5 +1,9 @@
 import os
+import threading
+import time
+from datetime import datetime, timedelta
 
+import pytz
 from dotenv import load_dotenv
 from pyairtable import Api
 from slack_bolt import App
@@ -7,12 +11,53 @@ from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 load_dotenv()
 
+# --- Event config ---
+EVENT_NAME = "Lock In Call"
+EVENT_JOIN_INFO = "[Join the call in #horizons!](https://hackclub.enterprise.slack.com/archives/C0AGKQ6K476)"
+EVENT_TAGLINE = "Lock in!!!!"
+EVENT_DESCRIPTION = "Come hang out and lock in!"
+# --------------------
+
 app = App(token=os.environ["SLACK_BOT_TOKEN"])
 
 airtable = Api(os.environ["AIRTABLE_API_KEY"]).table(
     os.environ["AIRTABLE_BASE_ID"],
     os.environ["AIRTABLE_TABLE_NAME"],
 )
+
+
+def reminder_loop():
+    while True:
+        try:
+            now = datetime.now(pytz.utc)
+            for record in airtable.all():
+                fields = record["fields"]
+                if fields.get("Reminder Sent"):
+                    continue
+                tz = pytz.timezone(fields["Timezone"])
+                start_dt = tz.localize(
+                    datetime.strptime(
+                        f"{fields['Start Date']} {fields['Start Time']}",
+                        "%Y-%m-%d %H:%M",
+                    )
+                )
+                reminder_dt = start_dt - timedelta(minutes=15)
+                if (
+                    timedelta(0)
+                    <= (now - reminder_dt.astimezone(pytz.utc))
+                    < timedelta(minutes=2)
+                ):
+                    app.client.chat_postMessage(
+                        channel=fields["Slack ID"],
+                        text=f"Reminder: your lock-in call starts in 15 minutes at {start_dt.strftime('%H:%M %Z')}!",
+                    )
+                    airtable.update(record["id"], {"Reminder Sent": True})
+        except Exception as e:
+            print(f"Reminder loop error: {e}")
+        time.sleep(60)
+
+
+threading.Thread(target=reminder_loop, daemon=True).start()
 
 
 @app.command("/lockin")
@@ -56,9 +101,20 @@ def handle_lockin(ack, body, client):
                     "block_id": "start_time_block",
                     "label": {"type": "plain_text", "text": "Start time"},
                     "element": {
-                        "type": "timepicker",
+                        "type": "static_select",
                         "action_id": "start_time",
                         "placeholder": {"type": "plain_text", "text": "Select a time"},
+                        "options": [
+                            {
+                                "text": {
+                                    "type": "plain_text",
+                                    "text": f"{h % 12 or 12}:{m:02d} {'AM' if h < 12 else 'PM'}",
+                                },
+                                "value": f"{h:02d}:{m:02d}",
+                            }
+                            for h in range(24)
+                            for m in (0, 30)
+                        ],
                     },
                 },
                 {
@@ -138,9 +194,9 @@ def handle_lockin_submission(ack, body, view, client):
 
     timezone = values["timezone_block"]["timezone"]["selected_option"]["value"]
     start_date = values["start_date_block"]["start_date"]["selected_date"]
-    start_time = values["start_time_block"]["start_time"]["selected_time"]
+    start_time = values["start_time_block"]["start_time"]["selected_option"]["value"]
     hours = values["hours_block"]["hours"]["value"]
-    notes = (values.get("notes_block", {}).get("notes", {}).get("value") or "")
+    notes = values.get("notes_block", {}).get("notes", {}).get("value") or ""
 
     try:
         airtable.create(
@@ -173,8 +229,28 @@ def handle_lockin_submission(ack, body, view, client):
         text=(
             f"Thanks for signing up!\n"
             f"*Start:* {start_date} {start_time}  |  *Duration:* {hours} hours  |  *Timezone:* {timezone}"
-            f"{notes_line}"
+            f"{notes_line}\n\n"
+            f"you will get a reminder 15 minutes before the call, "
+            f"If you have any issues, or something came up/you are no longer available to run the call, "
+            f"please send <@{os.environ['ADMIN_SLACK_ID']}> a message on slack or send an email to violet@hackclub.com"
         ),
+    )
+
+    tz = pytz.timezone(timezone)
+    start_dt = tz.localize(
+        datetime.strptime(f"{start_date} {start_time}", "%Y-%m-%d %H:%M")
+    )
+    end_dt = start_dt + timedelta(hours=int(hours))
+
+    yaml_block = (
+        f"```## {EVENT_NAME}\n"
+        f"yaml\n"
+        f"Start: {start_dt.isoformat()}\n"
+        f"End: {end_dt.isoformat()}\n"
+        f'JoinInfo: "{EVENT_JOIN_INFO}"\n'
+        f'Tagline: "{EVENT_TAGLINE}"\n'
+        f"\n"
+        f"{EVENT_DESCRIPTION}```"
     )
 
     client.chat_postMessage(
@@ -182,7 +258,8 @@ def handle_lockin_submission(ack, body, view, client):
         text=(
             f"New lock-in from <@{user_id}>!\n"
             f"*Start:* {start_date} {start_time}  |  *Duration:* {hours} hours  |  *Timezone:* {timezone}"
-            f"{notes_line}"
+            f"{notes_line}\n\n"
+            f"{yaml_block}"
         ),
     )
 
