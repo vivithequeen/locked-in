@@ -1,5 +1,4 @@
 slack-bolt>=1.18.0
 slack-sdk>=3.27.0
 python-dotenv>=1.0.0
-pyairtable>=2.3.0
 pytz>=2024.1

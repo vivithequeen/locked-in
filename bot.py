@@ -1,11 +1,8 @@
 import os
-import threading
-import time
 from datetime import datetime, timedelta
 
 import pytz
 from dotenv import load_dotenv
-from pyairtable import Api
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
@@ -19,45 +16,6 @@ EVENT_DESCRIPTION = "Come hang out and lock in!"
 # --------------------
 
 app = App(token=os.environ["SLACK_BOT_TOKEN"])
-
-airtable = Api(os.environ["AIRTABLE_API_KEY"]).table(
-    os.environ["AIRTABLE_BASE_ID"],
-    os.environ["AIRTABLE_TABLE_NAME"],
-)
-
-
-def reminder_loop():
-    while True:
-        try:
-            now = datetime.now(pytz.utc)
-            for record in airtable.all():
-                fields = record["fields"]
-                if fields.get("Reminder Sent"):
-                    continue
-                tz = pytz.timezone(fields["Timezone"])
-                start_dt = tz.localize(
-                    datetime.strptime(
-                        f"{fields['Start Date']} {fields['Start Time']}",
-                        "%Y-%m-%d %H:%M",
-                    )
-                )
-                reminder_dt = start_dt - timedelta(minutes=15)
-                if (
-                    timedelta(0)
-                    <= (now - reminder_dt.astimezone(pytz.utc))
-                    < timedelta(minutes=2)
-                ):
-                    app.client.chat_postMessage(
-                        channel=fields["Slack ID"],
-                        text=f"Reminder: your lock-in call starts in 15 minutes at {start_dt.strftime('%H:%M %Z')}!",
-                    )
-                    airtable.update(record["id"], {"Reminder Sent": True})
-        except Exception as e:
-            print(f"Reminder loop error: {e}")
-        time.sleep(60)
-
-
-threading.Thread(target=reminder_loop, daemon=True).start()
 
 
 @app.command("/lockin")
@@ -198,25 +156,6 @@ def handle_lockin_submission(ack, body, view, client):
     hours = values["hours_block"]["hours"]["value"]
     notes = values.get("notes_block", {}).get("notes", {}).get("value") or ""
 
-    try:
-        airtable.create(
-            {
-                "Slack ID": user_id,
-                "Timezone": timezone,
-                "Start Date": start_date,
-                "Start Time": start_time,
-                "Hours": int(hours),
-                "Notes": notes,
-            }
-        )
-    except Exception as e:
-        print(f"Airtable error: {e}")
-        ack(
-            response_action="errors",
-            errors={"start_date_block": "Failed to save, please try again."},
-        )
-        return
-
     ack()
     print(
         f"New lock-in: user={user_id}, tz={timezone}, start={start_date} {start_time}, hours={hours}"
@@ -230,7 +169,6 @@ def handle_lockin_submission(ack, body, view, client):
             f"Thanks for signing up!\n"
             f"*Start:* {start_date} {start_time}  |  *Duration:* {hours} hours  |  *Timezone:* {timezone}"
             f"{notes_line}\n\n"
-            f"you will get a reminder 15 minutes before the call, "
             f"If you have any issues, or something came up/you are no longer available to run the call, "
             f"please send <@{os.environ['ADMIN_SLACK_ID']}> a message on slack or send an email to violet@hackclub.com"
         ),
